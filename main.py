@@ -14,9 +14,10 @@ load_dotenv()
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_USER = os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j"))
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 app = FastAPI(
@@ -86,7 +87,7 @@ def make_json_safe(value):
     return value
 
 def run_query(query, params=None):
-    with driver.session(database=NEO4J_DATABASE) as session:
+    with driver.session(database=NEO4J_DATABASE, auth=(NEO4J_USER, NEO4J_PASSWORD)) as session:
         rows = [record.data() for record in session.run(query, params or {})]
     return make_json_safe(rows)
 
@@ -1105,26 +1106,26 @@ CATEGORY_KEYWORD_MAP = {
 REGION_KEYWORD_MAP = {
     "Palangka Raya": ["palangka raya", "palangkaraya", "palangka"],
     "Barito Selatan": ["barito selatan", "barsel", "buntok", "dusun selatan", "dusun utara", "gunung bintang awai", "karang rayung", "jenamas"],
-    "Barito Timur": ["barito timur", "bartim", "tamiang layang", "awang", "benua lima", "dusun tengah", "dusun timur", "karusen janang", 
+    "Barito Timur": ["barito timur", "bartim", "tamiang layang", "awang", "benua lima", "dusun tengah", "dusun timur", "karusen janang",
                     "paju epat", "paku", "patangkep tutui", "raren batuah"],
-    "Barito Utara": ["barito utara", "barut", "muara teweh", "gunung purei", "gunung timang", "lahei", "lahei barat", "montallat", "teweh baru", 
+    "Barito Utara": ["barito utara", "barut", "muara teweh", "gunung purei", "gunung timang", "lahei", "lahei barat", "montallat", "teweh baru",
                     "teweh selatan", "teweh tengah", "teweh timur"],
-    "Gunung Mas": ["gunung mas", "kuala kurun", "damang batu", "kahayan hulu utara", "kurun", "manuhing", "manuhing raya", "mihing raya", 
+    "Gunung Mas": ["gunung mas", "kuala kurun", "damang batu", "kahayan hulu utara", "kurun", "manuhing", "manuhing raya", "mihing raya",
                 "miri manasa", "rungan", "rungan barat", "rungan hulu", "sepang"],
-    "Kapuas": ["kapuas", "kuala kapuas", "basarang", "bataguh", "dadahup", "kapuas barat", "kapuas hilir", "kapuas hulu", "kapuas kuala", 
+    "Kapuas": ["kapuas", "kuala kapuas", "basarang", "bataguh", "dadahup", "kapuas barat", "kapuas hilir", "kapuas hulu", "kapuas kuala",
             "kapuas murung", "kapuas tengah", "kapuas timur", "mandau talawang", "mantangai", "pasak talawang", "pulau petak", "selat", "tamban catur"],
-    "Katingan": ["katingan", "kasongan", "bukit raya", "kamipang", "katingan hilir", "katingan hulu", "katingan kuala", "katingan tengah", "marikit", 
+    "Katingan": ["katingan", "kasongan", "bukit raya", "kamipang", "katingan hilir", "katingan hulu", "katingan kuala", "katingan tengah", "marikit",
                 "mendawai", "petak malai", "pulau malan", "sanaman mantikei", "tasik payawan", "tewang sangalang garing"],
-    "Kotawaringin Barat": ["kotawaringin barat", "kobar", "pangkalan bun", "arut selatan", "arut utara", "kotawaringin lama", "kumai", 
+    "Kotawaringin Barat": ["kotawaringin barat", "kobar", "pangkalan bun", "arut selatan", "arut utara", "kotawaringin lama", "kumai",
                 "pangkalan banteng", "pangkalan lada"],
-    "Kotawaringin Timur": ["kotawaringin timur", "kotim", "sampit", "antang kalang", "baamang", "bukit santuei", "cempaga", "cempaga hulu", 
-                "mentawa baru ketapang", "mentaya hilir selatan", "mentaya hilir utara", "mentaya hulu", "parenggean", "pulau hanaut", "seranau", 
+    "Kotawaringin Timur": ["kotawaringin timur", "kotim", "sampit", "antang kalang", "baamang", "bukit santuei", "cempaga", "cempaga hulu",
+                "mentawa baru ketapang", "mentaya hilir selatan", "mentaya hilir utara", "mentaya hulu", "parenggean", "pulau hanaut", "seranau",
                 "telaga antang", "telawang", "teluk sampit", "tualan hulu"],
     "Lamandau": ["lamandau", "nanga bulik", "batang kawa", "belantikan raya", "bulik", "bulik timur", "delang", "mentobi raya", "sematu jaya"],
-    "Murung Raya": ["murung raya", "puruk cahu", "barito tuhun raya", "laung tuhun", "murung", "permata intan", "seribu riam", "sumber barito", 
+    "Murung Raya": ["murung raya", "puruk cahu", "barito tuhun raya", "laung tuhun", "murung", "permata intan", "seribu riam", "sumber barito",
                 "sungai babuat", "tanah siang", "tanah siang selatan", "ulu rawas"],
     "Pulang Pisau": ["pulang pisau", "pulpis", "banama tingang", "jabiren raya", "kahayan hilir", "kahayan kuala", "kahayan tengah", "maliku", "pandih batu"],
-    "Seruyan": ["seruyan", "kuala pembuang", "batu ampar", "danau sembuluh", "hanau", "seruyan hilir", "seruyan hilir timur", "seruyan hulu", 
+    "Seruyan": ["seruyan", "kuala pembuang", "batu ampar", "danau sembuluh", "hanau", "seruyan hilir", "seruyan hilir timur", "seruyan hulu",
             "seruyan raya", "seruyan tengah", "suling tambun"],
     "Sukamara": ["sukamara", "balai riam", "jelai", "pantai lunci", "permata kecubung"]
 }

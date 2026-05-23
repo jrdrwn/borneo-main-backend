@@ -5,8 +5,9 @@ from difflib import SequenceMatcher
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, APIRouter, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from neo4j import GraphDatabase
 from pydantic import BaseModel
 
@@ -14,10 +15,9 @@ load_dotenv()
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", os.getenv("NEO4J_USERNAME", "neo4j"))
+NEO4J_USER = os.getenv("NEO4J_USERNAME", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
-
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 app = FastAPI(
@@ -87,7 +87,7 @@ def make_json_safe(value):
     return value
 
 def run_query(query, params=None):
-    with driver.session(database=NEO4J_DATABASE, auth=(NEO4J_USER, NEO4J_PASSWORD)) as session:
+    with driver.session(database=NEO4J_DATABASE) as session:
         rows = [record.data() for record in session.run(query, params or {})]
     return make_json_safe(rows)
 
@@ -592,6 +592,20 @@ def destination_detail(destination_id: str):
     if not item:
         raise HTTPException(status_code=404, detail="Destinasi tidak ditemukan")
     return {"success": True, "data": item}
+@app.get("/api/public/events")
+async def get_events():
+    with driver.session() as session:
+        query = """
+        MATCH (e:Event)
+        RETURN e.date AS date, e.title AS title, e.place AS place, e.time AS time
+        ORDER BY e.date ASC
+        """
+        results = session.run(query)
+        events = [
+            {"date": r["date"], "title": r["title"], "place": r["place"], "time": r["time"]}
+            for r in results
+        ]
+    return JSONResponse(content=events)
 
 
 def clean_value(value):

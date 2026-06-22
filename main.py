@@ -392,6 +392,100 @@ def generate_answer(question: str, entities: dict, recommendations: list[dict]) 
     detail_text = " ".join(detail) if detail else "yang sesuai dengan pertanyaan kamu"
     return f"Berikut rekomendasi wisata {detail_text}: {', '.join(names)}. Rekomendasi paling relevan adalah {top['nama']} karena sesuai dengan konteks pertanyaan, berada di {top.get('wilayah')}, dan berkategori {top.get('kategori')}."
 
+def fetch_featured_destinations(kategori=None, limit=6):
+    query = """
+    MATCH (d:Destinasi)-[:BERKATEGORI]->(k:Kategori)
+    MATCH (d)-[:BERLOKASI_DI]->(w:Wilayah)
+    WHERE
+      (
+        $kategori IS NULL
+        AND k.nama STARTS WITH "Wisata"
+      )
+      OR
+      (
+        $kategori IS NOT NULL
+        AND toLower(trim(toString(k.nama))) = toLower(trim($kategori))
+      )
+    WITH d, k, w,
+         coalesce(toFloatOrNull(toString(d.rating)), 0.0) AS rating_score,
+         coalesce(toIntegerOrNull(toString(d.jumlah_ulasan)), 0) AS review_count
+    WITH d, k, w, rating_score, review_count,
+         (rating_score * 0.6) + (log10(review_count + 1) * 0.4) AS recommendation_score
+    RETURN d.id AS id,
+           d.nama AS nama,
+           rating_score AS rating,
+           review_count AS jumlah_ulasan,
+
+           d.alamat AS alamat,
+           d.telepon AS telepon,
+           d.website AS website,
+           d.url AS url,
+
+           d.latitude AS latitude,
+           d.longitude AS longitude,
+
+           d.teks_nlp AS teks_nlp,
+           d.deskripsi AS deskripsi,
+           d.description AS description,
+           d.short_description AS short_description,
+
+           d.main_image AS main_image,
+           d.gallery_images AS gallery_images,
+           d.google_photo_names AS google_photo_names,
+           d.google_photo_attributions AS google_photo_attributions,
+           d.google_photo_source AS google_photo_source,
+
+           d.fasilitas AS fasilitas,
+           d.facilities AS facilities,
+           d.fasilitas_umum AS fasilitas_umum,
+
+           d.jam_buka AS jam_buka,
+           d.opening_hours AS opening_hours,
+           d.jam_operasional AS jam_operasional,
+
+           d.harga_tiket AS harga_tiket,
+           d.ticket_price AS ticket_price,
+           d.tiket AS tiket,
+
+           k.nama AS kategori,
+           w.nama AS wilayah,
+           w.provinsi AS provinsi,
+           recommendation_score AS recommendation_score
+    ORDER BY recommendation_score DESC
+    LIMIT $limit
+    """
+
+    return run_query(query, {
+        "kategori": kategori,
+        "limit": limit
+    })
+
+@app.get("/api/public/recommendations/featured")
+def featured_recommendations(
+    kategori: str | None = None,
+    limit: int = Query(6, ge=1, le=20)
+):
+    return {
+        "success": True,
+        "data": fetch_featured_destinations(kategori, limit)
+    }
+
+@app.get("/api/public/events")
+async def get_events():
+    with driver.session() as session:
+        query = """
+        MATCH (e:Event)
+        RETURN e.date AS date, e.title AS title, e.place AS place, e.time AS time
+        ORDER BY e.date ASC
+        """
+        results = session.run(query)
+        events = [
+            {"date": r["date"], "title": r["title"], "place": r["place"], "time": r["time"]}
+            for r in results
+        ]
+    return JSONResponse(content=events)
+
+
 @app.get("/")
 def root():
     return {"success": True, "message": "BorneoTrip Neo4j API aktif", "docs": "/docs"}

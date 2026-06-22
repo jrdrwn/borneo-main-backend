@@ -5,9 +5,8 @@ from difflib import SequenceMatcher
 from typing import Optional
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from neo4j import GraphDatabase
 from pydantic import BaseModel
 
@@ -15,9 +14,10 @@ load_dotenv()
 
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USERNAME", "neo4j")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 NEO4J_DATABASE = os.getenv("NEO4J_DATABASE", "neo4j")
+
 driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
 app = FastAPI(
@@ -38,51 +38,17 @@ class AskRequest(BaseModel):
     question: str
 
 
-def is_invalid_text(value):
-    if value is None:
-        return True
-
-    if not isinstance(value, str):
-        return False
-
-    text = value.strip().lower()
-
-    return text in [
-        "",
-        "-",
-        "nan",
-        "none",
-        "null",
-        "undefined",
-        "inf",
-        "infinity",
-        "-inf",
-        "-infinity"
-    ]
-
-
 def make_json_safe(value):
-    """Membersihkan data dari Neo4j agar aman dikirim sebagai JSON ke frontend.
-
-    Fungsi ini mengubah nilai kosong/tidak valid seperti `nan`, `null`, `-`,
-    `inf`, dan string kosong menjadi None. Dengan begitu, frontend dapat
-    menampilkan fallback seperti "Belum ada informasi" dan tidak lagi
-    menampilkan teks `nan`.
-    """
     if isinstance(value, float):
         if math.isnan(value) or math.isinf(value):
             return None
         return value
 
-    if isinstance(value, str):
-        return None if is_invalid_text(value) else value.strip()
-
     if isinstance(value, dict):
         return {key: make_json_safe(item) for key, item in value.items()}
 
     if isinstance(value, list):
-        cleaned_list = [make_json_safe(item) for item in value]
-        return [item for item in cleaned_list if item is not None]
+        return [make_json_safe(item) for item in value]
 
     return value
 
@@ -101,15 +67,16 @@ def normalize(text: str) -> str:
 STOPWORDS = {
     "yang", "di", "ke", "dari", "dan", "atau", "untuk", "dengan",
     "saya", "aku", "ingin", "mau", "ada", "apa", "aja", "saja",
-    "tolong", "carikan", "rekomendasikan", "rekomendasi", "tempat",
-    "wisata", "daerah", "kabupaten", "kota", "provinsi", "kalimantan",
+    "tolong", "carikan", "rekomendasikan", "rekomendasi",
+    "daerah", "kabupaten", "kota", "provinsi", "kalimantan",
     "tengah", "dong", "berikan", "tampilkan", "cari", "punya",
-    "memiliki", "berapa", "rating", "nilai", "ulasan", "alamat",
-    "lokasi", "dimana", "mana", "danau", "taman", "nasional"
+    "memiliki", "berapa", "nilai", "ulasan", "alamat",
+    "lokasi", "dimana", "mana"
 }
 
 def tokens(text: str):
     return [t for t in normalize(text).split() if t not in STOPWORDS and len(t) > 2]
+
 
 INTENT_KEYWORDS = {
     "recommendation": [
@@ -132,12 +99,38 @@ INTENT_KEYWORDS = {
 
 def detect_intent(question: str) -> str:
     q = normalize(question)
-    for intent, words in INTENT_KEYWORDS.items():
-        if any(w in q for w in words):
-            return intent
+
+    intent_priority = [
+        ("location", [
+            "alamat", "lokasi", "dimana", "di mana", "letak",
+            "maps", "map", "koordinat"
+        ]),
+        ("contact", [
+            "telepon", "nomor", "kontak", "website", "url", "link"
+        ]),
+        ("rating", [
+            "rating", "ulasan", "review", "nilai", "bintang"
+        ]),
+        ("detail", [
+            "detail", "informasi", "deskripsi", "jelaskan", "tentang"
+        ]),
+        ("recommendation", [
+            "rekomendasi", "rekomendasikan", "carikan", "cari",
+            "tampilkan", "apa saja", "daftar", "cocok",
+            "terbaik", "pilihan", "wisata", "populer"
+        ])
+    ]
+
+    for intent, keywords in intent_priority:
+        for keyword in keywords:
+            if contains_phrase(q, keyword):
+                return intent
+
     return "recommendation"
+
 def similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, normalize(a), normalize(b)).ratio()
+
 def best_match(question: str, candidates: list[str], threshold: float = 0.70):
     q = normalize(question)
     best = None
@@ -165,45 +158,12 @@ def list_destination_names():
 
 def destination_return_clause():
     return """
-    RETURN d.id AS id,
-           d.nama AS nama,
-           d.rating AS rating,
-           d.jumlah_ulasan AS jumlah_ulasan,
-
-           d.alamat AS alamat,
-           d.telepon AS telepon,
-           d.website AS website,
-           d.url AS url,
-
-           d.latitude AS latitude,
-           d.longitude AS longitude,
-
-           d.teks_nlp AS teks_nlp,
-           d.deskripsi AS deskripsi,
-           d.description AS description,
-           d.short_description AS short_description,
-
+    RETURN d.id AS id, d.nama AS nama, d.rating AS rating, d.jumlah_ulasan AS jumlah_ulasan,
+           d.alamat AS alamat, d.telepon AS telepon, d.website AS website, d.url AS url,
+           d.latitude AS latitude, d.longitude AS longitude, d.teks_nlp AS teks_nlp,
            d.main_image AS main_image,
            d.gallery_images AS gallery_images,
-           d.google_photo_names AS google_photo_names,
-           d.google_photo_attributions AS google_photo_attributions,
-           d.google_photo_source AS google_photo_source,
-
-           d.fasilitas AS fasilitas,
-           d.facilities AS facilities,
-           d.fasilitas_umum AS fasilitas_umum,
-
-           d.jam_buka AS jam_buka,
-           d.opening_hours AS opening_hours,
-           d.jam_operasional AS jam_operasional,
-
-           d.harga_tiket AS harga_tiket,
-           d.ticket_price AS ticket_price,
-           d.tiket AS tiket,
-
-           k.nama AS kategori,
-           w.nama AS wilayah,
-           w.provinsi AS provinsi
+           k.nama AS kategori, w.nama AS wilayah, w.provinsi AS provinsi
     """
 
 def fetch_destinations(kategori=None, wilayah=None, search=None, limit=24):
@@ -220,51 +180,23 @@ def fetch_destinations(kategori=None, wilayah=None, search=None, limit=24):
            d.nama AS nama,
            safe_rating AS rating,
            safe_ulasan AS jumlah_ulasan,
-
-           d.alamat AS alamat,
-           d.telepon AS telepon,
-           d.website AS website,
-           d.url AS url,
-
+           coalesce(toString(d.alamat), "") AS alamat,
+           coalesce(toString(d.telepon), "") AS telepon,
+           coalesce(toString(d.website), "") AS website,
+           coalesce(toString(d.url), "") AS url,
            d.latitude AS latitude,
            d.longitude AS longitude,
-
-           d.teks_nlp AS teks_nlp,
-           d.deskripsi AS deskripsi,
-           d.description AS description,
-           d.short_description AS short_description,
-
-           d.main_image AS main_image,
+           coalesce(toString(d.teks_nlp), "") AS teks_nlp,
+           coalesce(toString(d.main_image), "") AS main_image,
            d.gallery_images AS gallery_images,
-           d.google_photo_names AS google_photo_names,
-           d.google_photo_attributions AS google_photo_attributions,
-           d.google_photo_source AS google_photo_source,
-
-           d.fasilitas AS fasilitas,
-           d.facilities AS facilities,
-           d.fasilitas_umum AS fasilitas_umum,
-
-           d.jam_buka AS jam_buka,
-           d.opening_hours AS opening_hours,
-           d.jam_operasional AS jam_operasional,
-
-           d.harga_tiket AS harga_tiket,
-           d.ticket_price AS ticket_price,
-           d.tiket AS tiket,
-
            k.nama AS kategori,
            w.nama AS wilayah,
            w.provinsi AS provinsi
     ORDER BY safe_rating DESC, safe_ulasan DESC
     LIMIT $limit
     """
+    return run_query(query, {"kategori": kategori, "wilayah": wilayah, "search": search, "limit": limit})
 
-    return run_query(query, {
-        "kategori": kategori,
-        "wilayah": wilayah,
-        "search": search,
-        "limit": limit
-    })
 
 def fetch_destination_detail(dest_id: str):
     query = f"""
@@ -306,54 +238,47 @@ def fetch_for_qa(entities: dict):
         cypher = f"""
         MATCH (d:Destinasi)-[:BERKATEGORI]->(k:Kategori)
         MATCH (d)-[:BERLOKASI_DI]->(w:Wilayah)
-        WHERE toLower(trim(toString(d.nama))) CONTAINS toLower(trim($destinasi))
+        WHERE toLower(d.nama) CONTAINS toLower($destinasi)
         {destination_return_clause()}
-        ORDER BY coalesce(toFloatOrNull(toString(d.rating)), 0) DESC
+        ORDER BY coalesce(d.rating, 0) DESC
         LIMIT 50
         """
         return run_query(cypher, {"destinasi": entities["destinasi"]}), cypher
 
     wilayah = entities.get("wilayah") or entities.get("provinsi")
-    kategori = entities.get("kategori")
-    keywords = entities.get("keywords") or []
-
     cypher = f"""
-    MATCH (d:Destinasi)-[:BERKATEGORI]->(k:Kategori)
-    MATCH (d)-[:BERLOKASI_DI]->(w:Wilayah)
-    WHERE
-      (
-        $kategori IS NULL
-        OR toLower(trim(toString(k.nama))) = toLower(trim($kategori))
-      )
-      AND
-      (
-        $wilayah IS NULL
-        OR toLower(trim(toString(w.nama))) = toLower(trim($wilayah))
-      )
-      AND
-      (
-        size($keywords) = 0
-        OR any(keyword IN $keywords WHERE
-             toLower(coalesce(toString(d.nama), "")) CONTAINS toLower(keyword)
-          OR toLower(coalesce(toString(d.alamat), "")) CONTAINS toLower(keyword)
-          OR toLower(coalesce(toString(d.teks_nlp), "")) CONTAINS toLower(keyword)
-        )
-      )
-    {destination_return_clause()}
-    ORDER BY coalesce(toFloatOrNull(toString(d.rating)), 0) DESC,
-             coalesce(toIntegerOrNull(toString(d.jumlah_ulasan)), 0) DESC
+MATCH (d:Destinasi)-[:BERKATEGORI]->(k:Kategori)
+MATCH (d)-[:BERLOKASI_DI]->(w:Wilayah)
+WHERE
+  (
+    $kategori IS NULL
+    OR toLower(trim(toString(k.nama))) = toLower(trim($kategori))
+  )
+  AND
+  (
+    $wilayah IS NULL
+    OR toLower(trim(toString(w.nama))) = toLower(trim($wilayah))
+    OR toLower(trim(toString(w.provinsi))) = toLower(trim($wilayah))
+  )
+  AND
+  (
+    size($keywords) = 0
+    OR any(keyword IN $keywords WHERE
+         toLower(coalesce(toString(d.nama), "")) CONTAINS toLower(keyword)
+      OR toLower(coalesce(toString(d.alamat), "")) CONTAINS toLower(keyword)
+      OR toLower(coalesce(toString(d.teks_nlp), "")) CONTAINS toLower(keyword)
+    )
+  )
+{destination_return_clause()}
+ORDER BY coalesce(toFloatOrNull(toString(d.rating)), 0) DESC,
+         coalesce(toIntegerOrNull(toString(d.jumlah_ulasan)), 0) DESC
     LIMIT 50
     """
-
-    params = {
-        "kategori": kategori,
-        "wilayah": wilayah,
-        "keywords": keywords
-    }
-
+    params = {"kategori": entities.get("kategori"), "wilayah": wilayah, "keywords": entities.get("keywords") or []}
     rows = run_query(cypher, params)
 
-    if not rows and (kategori or wilayah):
+    # fallback: jangan terlalu ketat jika keyword tidak menghasilkan data
+    if not rows and (entities.get("kategori") or wilayah):
         params["keywords"] = []
         rows = run_query(cypher, params)
 
@@ -362,53 +287,70 @@ def fetch_for_qa(entities: dict):
 def doc(item: dict) -> str:
     return " ".join(str(item.get(k) or "") for k in ["nama", "kategori", "wilayah", "provinsi", "alamat", "teks_nlp"])
 
-def rank(question: str, items: list[dict], top_k=6):
+def safe_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+        value = str(value).strip()
+        if value.lower() in ["", "-", "nan", "none", "null", "inf", "infinity", "-inf", "-infinity"]:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def calculate_weighted_score(item: dict, sim: float, entities: dict | None = None) -> dict:
+    entities = entities or {}
+
+    target_category = normalize(entities.get("kategori") or "")
+    target_region = normalize(entities.get("wilayah") or entities.get("provinsi") or "")
+
+    item_category = normalize(item.get("kategori") or "")
+    item_region = normalize(item.get("wilayah") or "")
+    item_province = normalize(item.get("provinsi") or "")
+
+    # Jika kategori/wilayah tidak disebutkan oleh pengguna, komponen tersebut tidak menjadi pembatas.
+    category_match = 1.0 if not target_category else float(item_category == target_category)
+    region_match = 1.0 if not target_region else float(item_region == target_region or item_province == target_region)
+
+    rating_norm = min(max(safe_float(item.get("rating"), 0.0) / 5.0, 0.0), 1.0)
+    review_factor = min(max(safe_float(item.get("jumlah_ulasan"), 0.0) / 500.0, 0.0), 1.0)
+
+    score = (
+        (float(sim) * 0.45) +
+        (category_match * 0.25) +
+        (region_match * 0.20) +
+        (rating_norm * 0.07) +
+        (review_factor * 0.03)
+    )
+
+    return {
+        "relevance_score": round(score, 4),
+        "similarity_score": round(float(sim), 4),
+        "category_match": int(category_match),
+        "region_match": int(region_match),
+        "rating_score": round(rating_norm, 4),
+        "review_score": round(review_factor, 4),
+    }
+
+
+def rank(question: str, items: list[dict], entities: dict | None = None, top_k=6):
     if not items:
         return []
-    expected_category = None
-    expected_region = None
-    try:
-        expected_category = infer_category_from_keywords(question)
-    except Exception:
-        expected_category = None
-    try:
-        expected_region = infer_region_from_keywords(question)
-    except Exception:
-        expected_region = None
-    def safe_float(value, default=0.0):
-        try:
-            if value is None:
-                return default
-            value = float(value)
-            if math.isnan(value) or math.isinf(value):
-                return default
-            return value
-        except Exception:
-            return default
+
     try:
         from sklearn.feature_extraction.text import TfidfVectorizer
         from sklearn.metrics.pairwise import cosine_similarity
+
         corpus = [question] + [doc(i) for i in items]
         matrix = TfidfVectorizer().fit_transform(corpus)
         sims = cosine_similarity(matrix[0:1], matrix[1:]).flatten().tolist()
+
         ranked = []
         for item, sim in zip(items, sims):
-            rating = safe_float(item.get("rating")) / 5
-            review_factor = min(safe_float(item.get("jumlah_ulasan")) / 500.0, 1.0)
-            category_match = 0.0
-            region_match = 0.0
-            if expected_category and normalize(item.get("kategori") or "") == normalize(expected_category):
-                category_match = 1.0
-            if expected_region and normalize(item.get("wilayah") or "") == normalize(expected_region):
-                region_match = 1.0
-            score = (
-                (sim * 0.45)
-                + (category_match * 0.25)
-                + (region_match * 0.20)
-                + (rating * 0.07)
-                + (review_factor * 0.03)
-            )
-            ranked.append({**item, "relevance_score": round(score, 4)})
+            score_components = calculate_weighted_score(item, sim, entities)
+            ranked.append({**item, **score_components})
+
         return sorted(ranked, key=lambda x: x["relevance_score"], reverse=True)[:top_k]
 
     except Exception:
@@ -416,43 +358,15 @@ def rank(question: str, items: list[dict], top_k=6):
         ranked = []
 
         for item in items:
-            d_tokens = set(tokens(doc(item)))
-            base = len(q.intersection(d_tokens)) / max(len(q), 1)
-
-            category_match = 0.0
-            region_match = 0.0
-
-            if expected_category and normalize(item.get("kategori") or "") == normalize(expected_category):
-                category_match = 1.0
-
-            if expected_region and normalize(item.get("wilayah") or "") == normalize(expected_region):
-                region_match = 1.0
-
-            rating = safe_float(item.get("rating")) / 5
-
-            score = (
-                (base * 0.45)
-                + (category_match * 0.25)
-                + (region_match * 0.20)
-                + (rating * 0.10)
-            )
-
-            ranked.append({**item, "relevance_score": round(score, 4)})
+            d = set(tokens(doc(item)))
+            sim = len(q.intersection(d)) / max(len(q), 1)
+            score_components = calculate_weighted_score(item, sim, entities)
+            ranked.append({**item, **score_components})
 
         return sorted(ranked, key=lambda x: x["relevance_score"], reverse=True)[:top_k]
 
-
 def generate_answer(question: str, entities: dict, recommendations: list[dict]) -> str:
-    kategori = entities.get("kategori")
-    wilayah = entities.get("wilayah") or entities.get("provinsi")
-
     if not recommendations:
-        if kategori and wilayah:
-            return f"Maaf, saya belum menemukan data {kategori} di {wilayah} pada Knowledge Graph. Coba gunakan wilayah lain atau kata kunci yang lebih umum."
-        if kategori:
-            return f"Maaf, saya belum menemukan data {kategori} yang sesuai pada Knowledge Graph."
-        if wilayah:
-            return f"Maaf, saya belum menemukan destinasi yang sesuai di {wilayah} pada Knowledge Graph."
         return "Maaf, saya belum menemukan destinasi yang sesuai di Knowledge Graph. Coba tuliskan nama kategori, wilayah, atau destinasi dengan lebih spesifik."
 
     top = recommendations[0]
@@ -460,119 +374,28 @@ def generate_answer(question: str, entities: dict, recommendations: list[dict]) 
 
     if intent == "location":
         return f"{top['nama']} berlokasi di {top.get('alamat') or top.get('wilayah')}. Destinasi ini termasuk kategori {top.get('kategori')} di wilayah {top.get('wilayah')}."
-
     if intent == "contact":
         return f"Informasi kontak {top['nama']}: telepon {top.get('telepon') or 'belum tersedia'}, website/link {top.get('website') or top.get('url') or 'belum tersedia'}."
-
     if intent == "rating":
         return f"{top['nama']} memiliki rating {top.get('rating') or 'belum tersedia'} dengan jumlah ulasan sekitar {top.get('jumlah_ulasan') or 0}."
-
     if intent == "detail" and entities.get("destinasi"):
         return f"{top['nama']} adalah destinasi kategori {top.get('kategori')} di {top.get('wilayah')}. Alamatnya {top.get('alamat')}. Ratingnya {top.get('rating') or 'belum tersedia'}."
 
-    label = kategori or "destinasi wisata"
-    lokasi_text = f" di {wilayah}" if wilayah else ""
+    names = [x["nama"] for x in recommendations]
+    detail = []
+    if entities.get("kategori"):
+        detail.append(entities["kategori"])
+    if entities.get("wilayah") or entities.get("provinsi"):
+        detail.append(f"di {entities.get('wilayah') or entities.get('provinsi')}")
+    if entities.get("keywords"):
+        detail.append(f"dengan kata kunci {', '.join(entities['keywords'][:3])}")
+    detail_text = " ".join(detail) if detail else "yang sesuai dengan pertanyaan kamu"
+    return f"Berikut rekomendasi wisata {detail_text}: {', '.join(names)}. Rekomendasi paling relevan adalah {top['nama']} karena sesuai dengan konteks pertanyaan, berada di {top.get('wilayah')}, dan berkategori {top.get('kategori')}."
 
-    names = [x["nama"] for x in recommendations if x.get("nama")]
-    names_text = ", ".join(names)
-
-    answer = f"Berikut rekomendasi {label}{lokasi_text}: {names_text}."
-
-    answer += f" Rekomendasi paling relevan adalah {top['nama']}"
-
-    if top.get("wilayah"):
-        answer += f" di {top.get('wilayah')}"
-
-    if top.get("alamat"):
-        answer += f", beralamat di {top.get('alamat')}"
-
-    if top.get("rating"):
-        answer += f", dengan rating {top.get('rating')}"
-
-    answer += "."
-
-    return answer
-
-def fetch_featured_destinations(kategori=None, limit=6):
-    query = """
-    MATCH (d:Destinasi)-[:BERKATEGORI]->(k:Kategori)
-    MATCH (d)-[:BERLOKASI_DI]->(w:Wilayah)
-    WHERE
-      (
-        $kategori IS NULL
-        AND k.nama STARTS WITH "Wisata"
-      )
-      OR
-      (
-        $kategori IS NOT NULL
-        AND toLower(trim(toString(k.nama))) = toLower(trim($kategori))
-      )
-    WITH d, k, w,
-         coalesce(toFloatOrNull(toString(d.rating)), 0.0) AS rating_score,
-         coalesce(toIntegerOrNull(toString(d.jumlah_ulasan)), 0) AS review_count
-    WITH d, k, w, rating_score, review_count,
-         (rating_score * 0.6) + (log10(review_count + 1) * 0.4) AS recommendation_score
-    RETURN d.id AS id,
-           d.nama AS nama,
-           rating_score AS rating,
-           review_count AS jumlah_ulasan,
-
-           d.alamat AS alamat,
-           d.telepon AS telepon,
-           d.website AS website,
-           d.url AS url,
-
-           d.latitude AS latitude,
-           d.longitude AS longitude,
-
-           d.teks_nlp AS teks_nlp,
-           d.deskripsi AS deskripsi,
-           d.description AS description,
-           d.short_description AS short_description,
-
-           d.main_image AS main_image,
-           d.gallery_images AS gallery_images,
-           d.google_photo_names AS google_photo_names,
-           d.google_photo_attributions AS google_photo_attributions,
-           d.google_photo_source AS google_photo_source,
-
-           d.fasilitas AS fasilitas,
-           d.facilities AS facilities,
-           d.fasilitas_umum AS fasilitas_umum,
-
-           d.jam_buka AS jam_buka,
-           d.opening_hours AS opening_hours,
-           d.jam_operasional AS jam_operasional,
-
-           d.harga_tiket AS harga_tiket,
-           d.ticket_price AS ticket_price,
-           d.tiket AS tiket,
-
-           k.nama AS kategori,
-           w.nama AS wilayah,
-           w.provinsi AS provinsi,
-           recommendation_score AS recommendation_score
-    ORDER BY recommendation_score DESC
-    LIMIT $limit
-    """
-
-    return run_query(query, {
-        "kategori": kategori,
-        "limit": limit
-    })
-
-@app.get("/api/public/recommendations/featured")
-def featured_recommendations(
-    kategori: str | None = None,
-    limit: int = Query(6, ge=1, le=20)
-):
-    return {
-        "success": True,
-        "data": fetch_featured_destinations(kategori, limit)
-    }
 @app.get("/")
 def root():
     return {"success": True, "message": "BorneoTrip Neo4j API aktif", "docs": "/docs"}
+
 @app.get("/api/health")
 def health():
     return {"success": True, "message": "API aktif"}
@@ -580,32 +403,21 @@ def health():
 @app.get("/api/public/categories")
 def categories():
     return {"success": True, "data": list_categories()}
+
 @app.get("/api/public/regions")
 def regions():
     return {"success": True, "data": list_regions()}
+
 @app.get("/api/public/destinations")
 def destinations(kategori: str | None = None, wilayah: str | None = None, search: str | None = None, limit: int = Query(24, ge=1, le=100)):
     return {"success": True, "data": fetch_destinations(kategori, wilayah, search, limit)}
+
 @app.get("/api/public/destinations/{destination_id}")
 def destination_detail(destination_id: str):
     item = fetch_destination_detail(destination_id)
     if not item:
         raise HTTPException(status_code=404, detail="Destinasi tidak ditemukan")
     return {"success": True, "data": item}
-@app.get("/api/public/events")
-async def get_events():
-    with driver.session() as session:
-        query = """
-        MATCH (e:Event)
-        RETURN e.date AS date, e.title AS title, e.place AS place, e.time AS time
-        ORDER BY e.date ASC
-        """
-        results = session.run(query)
-        events = [
-            {"date": r["date"], "title": r["title"], "place": r["place"], "time": r["time"]}
-            for r in results
-        ]
-    return JSONResponse(content=events)
 
 
 def clean_value(value):
@@ -626,44 +438,20 @@ def get_all_destination_rows_for_matching():
       d.nama AS nama,
       d.rating AS rating,
       d.jumlah_ulasan AS jumlah_ulasan,
-
       d.alamat AS alamat,
       d.telepon AS telepon,
       d.website AS website,
       d.url AS url,
-
       d.latitude AS latitude,
       d.longitude AS longitude,
-
       d.teks_nlp AS teks_nlp,
-      d.deskripsi AS deskripsi,
-      d.description AS description,
-      d.short_description AS short_description,
-
       d.main_image AS main_image,
       d.gallery_images AS gallery_images,
-      d.google_photo_names AS google_photo_names,
-      d.google_photo_attributions AS google_photo_attributions,
-      d.google_photo_source AS google_photo_source,
-
-      d.fasilitas AS fasilitas,
-      d.facilities AS facilities,
-      d.fasilitas_umum AS fasilitas_umum,
-
-      d.jam_buka AS jam_buka,
-      d.opening_hours AS opening_hours,
-      d.jam_operasional AS jam_operasional,
-
-      d.harga_tiket AS harga_tiket,
-      d.ticket_price AS ticket_price,
-      d.tiket AS tiket,
-
       k.nama AS kategori,
       w.nama AS wilayah,
       w.provinsi AS provinsi
     LIMIT 6000
     """
-
     return run_query(query)
 
 def find_destination_in_question(question):
@@ -1068,32 +856,33 @@ def get_destinations_for_qa(kategori=None, wilayah=None, destinasi=None, keyword
     return rows, cypher
 
 
-def rank_destinations(question: str, items: list[dict], top_k=6):
-    return rank(question, items, top_k=top_k)
-
-
-
-
-# =========================
-# CATEGORY SYNONYM & NATURAL KEYWORD LAYER
-# =========================
+def rank_destinations(question: str, items: list[dict], entities: dict | None = None, top_k=6):
+    return rank(question, items, entities=entities, top_k=top_k)
 
 CATEGORY_KEYWORD_MAP = {
     "Wisata Kuliner": [
         "tempat makan", "makan", "makanan", "kuliner", "kulineran",
-        "warung", "restoran", "restaurant", "rumah makan", "cafe", "kafe",
-        "kopi", "bakso", "soto", "sate", "nasi", "mie", "minuman",
-        "jajanan", "oleh oleh makanan"
+        "warung", "restoran", "restaurant", "rumah makan", "cafe",
+        "kafe", "kopi", "bakso", "soto", "sate", "nasi", "mie",
+        "minuman", "jajanan", "oleh oleh makanan"
+    ],
+    "Akomodasi": [
+        "akomodasi", "hotel", "resort", "guest house", "wisma"
+    ],
+    "Penginapan": [
+        "penginapan", "losmen", "homestay", "tempat menginap",
+        "menginap"
     ],
     "Wisata Alam": [
-        "pantai", "hutan", "taman", "taman nasional", "danau", "air terjun",
-        "bukit", "gunung", "sungai", "pulau", "riam", "goa", "gua",
-        "pemandian", "agrowisata", "alam", "view", "pemandangan"
+        "pantai", "hutan", "taman", "taman nasional", "danau",
+        "air terjun", "bukit", "gunung", "sungai", "pulau",
+        "riam", "goa", "gua", "pemandian", "agrowisata",
+        "alam", "view", "pemandangan"
     ],
     "Wisata Sejarah": [
-        "sejarah", "bersejarah", "museum", "monumen", "tugu", "situs",
-        "makam", "keramat", "candi", "benteng", "betang", "balai",
-        "peninggalan", "pahlawan"
+        "sejarah", "bersejarah", "museum", "monumen", "tugu",
+        "situs", "makam", "keramat", "candi", "benteng",
+        "betang", "balai", "peninggalan", "pahlawan"
     ],
     "Wisata Religi": [
         "religi", "ibadah", "masjid", "gereja", "pura", "vihara",
@@ -1110,38 +899,45 @@ CATEGORY_KEYWORD_MAP = {
     "Wisata Edukasi": [
         "edukasi", "pendidikan", "belajar", "pengetahuan",
         "wisata edukasi"
-    ],
-    "Akomodasi": [
-        "hotel", "penginapan", "losmen", "homestay", "resort",
-        "tempat menginap", "menginap"
     ]
 }
 
+
 REGION_KEYWORD_MAP = {
-    "Palangka Raya": ["palangka raya", "palangkaraya", "palangka"],
-    "Barito Selatan": ["barito selatan", "barsel", "buntok", "dusun selatan", "dusun utara", "gunung bintang awai", "karang rayung", "jenamas"],
-    "Barito Timur": ["barito timur", "bartim", "tamiang layang", "awang", "benua lima", "dusun tengah", "dusun timur", "karusen janang",
-                    "paju epat", "paku", "patangkep tutui", "raren batuah"],
-    "Barito Utara": ["barito utara", "barut", "muara teweh", "gunung purei", "gunung timang", "lahei", "lahei barat", "montallat", "teweh baru",
-                    "teweh selatan", "teweh tengah", "teweh timur"],
-    "Gunung Mas": ["gunung mas", "kuala kurun", "damang batu", "kahayan hulu utara", "kurun", "manuhing", "manuhing raya", "mihing raya",
-                "miri manasa", "rungan", "rungan barat", "rungan hulu", "sepang"],
-    "Kapuas": ["kapuas", "kuala kapuas", "basarang", "bataguh", "dadahup", "kapuas barat", "kapuas hilir", "kapuas hulu", "kapuas kuala",
-            "kapuas murung", "kapuas tengah", "kapuas timur", "mandau talawang", "mantangai", "pasak talawang", "pulau petak", "selat", "tamban catur"],
-    "Katingan": ["katingan", "kasongan", "bukit raya", "kamipang", "katingan hilir", "katingan hulu", "katingan kuala", "katingan tengah", "marikit",
-                "mendawai", "petak malai", "pulau malan", "sanaman mantikei", "tasik payawan", "tewang sangalang garing"],
-    "Kotawaringin Barat": ["kotawaringin barat", "kobar", "pangkalan bun", "arut selatan", "arut utara", "kotawaringin lama", "kumai",
-                "pangkalan banteng", "pangkalan lada"],
-    "Kotawaringin Timur": ["kotawaringin timur", "kotim", "sampit", "antang kalang", "baamang", "bukit santuei", "cempaga", "cempaga hulu",
-                "mentawa baru ketapang", "mentaya hilir selatan", "mentaya hilir utara", "mentaya hulu", "parenggean", "pulau hanaut", "seranau",
-                "telaga antang", "telawang", "teluk sampit", "tualan hulu"],
-    "Lamandau": ["lamandau", "nanga bulik", "batang kawa", "belantikan raya", "bulik", "bulik timur", "delang", "mentobi raya", "sematu jaya"],
-    "Murung Raya": ["murung raya", "puruk cahu", "barito tuhun raya", "laung tuhun", "murung", "permata intan", "seribu riam", "sumber barito",
-                "sungai babuat", "tanah siang", "tanah siang selatan", "ulu rawas"],
-    "Pulang Pisau": ["pulang pisau", "pulpis", "banama tingang", "jabiren raya", "kahayan hilir", "kahayan kuala", "kahayan tengah", "maliku", "pandih batu"],
-    "Seruyan": ["seruyan", "kuala pembuang", "batu ampar", "danau sembuluh", "hanau", "seruyan hilir", "seruyan hilir timur", "seruyan hulu",
-            "seruyan raya", "seruyan tengah", "suling tambun"],
-    "Sukamara": ["sukamara", "balai riam", "jelai", "pantai lunci", "permata kecubung"]
+    "Palangka Raya": ["palangka raya", "palangkaraya","palangka","pky","plk","kota palangka raya",
+                    "kota palangkaraya"],
+    "Barito Selatan": ["barito selatan", "barsel", "buntok", "dusun selatan","dusun utara",
+                    "gunung bintang awai", "karang rayung", "jenamas"],
+    "Barito Timur": ["barito timur", "bartim", "tamiang layang", "awang","benua lima",
+                    "dusun tengah", "dusun timur", "karusen janang","paju epat", "paku",
+                    "patangkep tutui", "raren batuah"],
+    "Barito Utara": ["barito utara", "barut", "muara teweh", "gunung purei","gunung timang",
+                    "lahei", "lahei barat", "montallat","teweh baru", "teweh selatan", "teweh tengah",
+                    "teweh timur"],
+    "Gunung Mas": ["gunung mas", "gumas", "kuala kurun", "damang batu","kahayan hulu utara", "kurun",
+                   "manuhing", "manuhing raya","mihing raya", "miri manasa", "rungan", "rungan barat",
+                   "rungan hulu", "sepang"],
+    "Kapuas": ["kapuas", "kuala kapuas", "basarang", "bataguh", "dadahup","kapuas barat", "kapuas hilir",
+               "kapuas hulu", "kapuas kuala","kapuas murung", "kapuas tengah", "kapuas timur","mandau talawang",
+               "mantangai", "pasak talawang","pulau petak", "selat", "tamban catur"],
+    "Katingan": ["katingan", "kasongan", "bukit raya", "kamipang","katingan hilir", "katingan hulu",
+                "katingan kuala","katingan tengah", "marikit", "mendawai", "petak malai","pulau malan",
+                "sanaman mantikei", "tasik payawan","tewang sangalang garing"],
+    "Kotawaringin Barat": ["kotawaringin barat", "kobar", "pangkalan bun","arut selatan", "arut utara",
+                        "kotawaringin lama","kumai", "pangkalan banteng", "pangkalan lada"],
+    "Kotawaringin Timur": ["kotawaringin timur", "kotim", "sampit", "baamang","mentawa baru ketapang",
+                        "mentaya hilir selatan","mentaya hilir utara", "mentaya hulu", "parenggean",
+                        "pulau hanaut", "seranau", "telaga antang", "telawang","teluk sampit", "tualan hulu"],
+    "Lamandau": ["lamandau", "nanga bulik", "batang kawa", "belantikan raya","bulik", "bulik timur",
+                "delang", "mentobi raya", "sematu jaya"],
+    "Murung Raya": ["murung raya", "mura", "puruk cahu", "barito tuhun raya","laung tuhun", "murung",
+                "permata intan", "seribu riam","sumber barito", "sungai babuat", "tanah siang",
+                "tanah siang selatan", "ulu rawas"],
+    "Pulang Pisau": ["pulang pisau", "pulpis", "banama tingang", "jabiren raya","kahayan hilir", "kahayan kuala",
+                    "kahayan tengah","maliku", "pandih batu"],
+    "Seruyan": ["seruyan", "kuala pembuang", "batu ampar", "danau sembuluh","hanau", "seruyan hilir",
+                "seruyan hilir timur","seruyan hulu", "seruyan raya", "seruyan tengah", "suling tambun"],
+    "Sukamara": ["sukamara", "balai riam", "jelai", "pantai lunci","permata kecubung"]
 }
 
 def contains_phrase(q: str, phrase: str) -> bool:
@@ -1150,27 +946,15 @@ def contains_phrase(q: str, phrase: str) -> bool:
     return phrase_pad in q_pad
 
 
-def detect_region_with_alias(question: str):
-    q = normalize(question)
-
-    for region, aliases in REGION_KEYWORD_MAP.items():
-        for alias in aliases:
-            if contains_phrase(q, alias):
-                return {
-                    "region": region,
-                    "matched_alias": alias,
-                    "aliases": aliases
-                }
-
-    return None
-
-
 def infer_category_from_keywords(question: str):
     q = normalize(question)
 
+    # Prioritas penting: kalau user bilang "tempat makan di sekitar taman nasional",
+    # target kategori tetap kuliner, bukan wisata alam.
     category_priority = [
         "Wisata Kuliner",
         "Akomodasi",
+        "Penginapan",
         "Wisata Alam",
         "Wisata Sejarah",
         "Wisata Religi",
@@ -1221,78 +1005,28 @@ def strengthen_entities_with_natural_keywords(question: str, entities: dict):
     entities = dict(entities or {})
 
     natural_category = infer_category_from_keywords(question)
-    detected_region = detect_region_with_alias(question)
+    natural_region = infer_region_from_keywords(question)
 
     if natural_category:
         entities["kategori"] = natural_category
 
-    if detected_region:
-        entities["wilayah"] = detected_region["region"]
-        entities["matched_region_alias"] = detected_region["matched_alias"]
-        entities["region_aliases"] = detected_region["aliases"]
+    if natural_region:
+        entities["wilayah"] = natural_region
 
     if infer_recommendation_intent(question):
         entities["intent"] = "recommendation"
 
+    # Bersihkan keyword umum agar tidak mengganggu pencarian Neo4j.
     noisy_keywords = {
         "aku", "saya", "ingin", "mau", "pergi", "ke", "di", "sekitar",
-        "dekat", "tempat", "yang", "bagus", "populer", "terbaik",
-        "rekomendasikan", "rekomendasi", "carikan", "cari", "wisata",
-        "rating", "tinggi", "makan", "makanan", "kuliner", "warung",
-        "restoran", "restaurant", "rumah", "kafe", "cafe", "dan",
-        "atau", "dengan", "untuk", "berikan", "tampilkan"
+        "dekat", "tempat", "yang", "bagus", "populer", "rekomendasikan",
+        "rekomendasi", "carikan", "cari", "wisata", "rating", "tinggi"
     }
 
-    region_words = set()
-    for region, aliases in REGION_KEYWORD_MAP.items():
-        region_norm = normalize(region)
-        region_words.add(region_norm)
-
-        for token in region_norm.split():
-            region_words.add(token)
-
-        for alias in aliases:
-            alias_norm = normalize(alias)
-            region_words.add(alias_norm)
-
-            for token in alias_norm.split():
-                region_words.add(token)
-
-    category_words = set()
-    for category, aliases in CATEGORY_KEYWORD_MAP.items():
-        category_norm = normalize(category)
-        category_words.add(category_norm)
-
-        for token in category_norm.split():
-            category_words.add(token)
-
-        for alias in aliases:
-            alias_norm = normalize(alias)
-            category_words.add(alias_norm)
-
-            for token in alias_norm.split():
-                category_words.add(token)
-
-    cleaned_keywords = []
-
-    for keyword in entities.get("keywords", []):
-        keyword_norm = normalize(keyword)
-
-        if not keyword_norm:
-            continue
-
-        if keyword_norm in noisy_keywords:
-            continue
-
-        if keyword_norm in region_words:
-            continue
-
-        if keyword_norm in category_words:
-            continue
-
-        cleaned_keywords.append(keyword)
-
-    entities["keywords"] = cleaned_keywords[:8]
+    entities["keywords"] = [
+        k for k in entities.get("keywords", [])
+        if normalize(k) not in noisy_keywords
+    ][:8]
 
     return entities
 
@@ -1330,48 +1064,11 @@ def should_ignore_direct_destination(question: str, direct_destination, entities
 
 
 
-
-def fetch_exact_recommendation(question: str):
-    kategori = infer_category_from_keywords(question)
-    detected_region = detect_region_with_alias(question)
-
-    if not kategori or not detected_region:
-        return None
-
-    wilayah = detected_region["region"]
-
-    cypher = f"""
-    MATCH (d:Destinasi)-[:BERKATEGORI]->(k:Kategori)
-    MATCH (d)-[:BERLOKASI_DI]->(w:Wilayah)
-    WHERE toLower(trim(toString(k.nama))) = toLower(trim($kategori))
-      AND toLower(trim(toString(w.nama))) = toLower(trim($wilayah))
-    {destination_return_clause()}
-    ORDER BY coalesce(toFloatOrNull(toString(d.rating)), 0) DESC,
-             coalesce(toIntegerOrNull(toString(d.jumlah_ulasan)), 0) DESC
-    LIMIT 6
-    """
-
-    rows = run_query(cypher, {
-        "kategori": kategori,
-        "wilayah": wilayah
-    })
-
-    entities = {
-        "intent": "recommendation",
-        "kategori": kategori,
-        "wilayah": wilayah,
-        "provinsi": None,
-        "destinasi": None,
-        "keywords": [],
-        "matched_region_alias": detected_region["matched_alias"],
-        "region_aliases": detected_region["aliases"]
-    }
-
-    return rows, cypher, entities
-
 @app.post("/api/qa/ask")
 def ask(payload: AskRequest):
     original_question = payload.question or ""
+
+    # 1. Jawab percakapan umum dulu: halo, terima kasih, bantuan, identitas AI.
     conversation_answer = detect_conversation_answer(original_question)
     if conversation_answer:
         return {
@@ -1388,20 +1085,6 @@ def ask(payload: AskRequest):
             },
             "recommendations": [],
             "cypher_used": None
-        }
-    exact_result = fetch_exact_recommendation(original_question)
-
-    if exact_result:
-        recommendations, cypher, entities = exact_result
-        answer = generate_answer(original_question, entities, recommendations)
-
-        return {
-            "success": True,
-            "question": original_question,
-            "answer": answer,
-            "entities": entities,
-            "recommendations": recommendations,
-            "cypher_used": cypher.strip()
         }
 
     # 2. Perluas bahasa natural pengguna dan perkuat entity dengan kamus sinonim.
@@ -1503,8 +1186,25 @@ def ask(payload: AskRequest):
             limit=50
         )
 
-    recommendations = rank_destinations(question, destinations, top_k=6)
+    recommendations = rank_destinations(question, destinations, entities=entities, top_k=6)
     answer = generate_answer(question, entities, recommendations)
+
+    if recommendations:
+        top_score = recommendations[0].get("relevance_score")
+
+        if top_score is not None and top_score < 0.25:
+            return {
+                "success": True,
+                "question": original_question,
+                "answer": (
+                    "Maaf, saya belum menemukan rekomendasi yang cukup relevan. "
+                    "Coba tuliskan pertanyaan dengan kategori wisata dan wilayah yang lebih jelas, "
+                    "misalnya 'rekomendasi wisata kuliner di Palangka Raya'."
+                ),
+                "entities": entities,
+                "recommendations": [],
+                "cypher_used": cypher.strip() if cypher else None
+            }
 
     return {
         "success": True,
